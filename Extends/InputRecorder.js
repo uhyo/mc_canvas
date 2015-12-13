@@ -1,5 +1,33 @@
-// Input Recorder
-//
+/*
+ * Input Recorder: キー入力を保存
+ *
+ * 使い方: 
+ *   CanvasMasao.Gameに以下のオプションを渡す
+ *   {
+ *     extensions: [CanvasMasao.InputRecorder],
+ *     InputRecorder: {
+ *       inputdataCallback: ...,
+ *       requiresCallback: ...
+ *     }
+ *   }
+ *
+ * オプション:
+ *   inputdataCallback: 入力データが1プレイ分まとまったときに呼び出される関数。1プレイごとに呼び出されれる。引数はPlaylogObject（後述）
+ *   requiresCallback: どの入力データに対してinputdataCallbackを呼び出すかを制御する関数。引数はResultObject（後述）、返り値はboolean。trueならinputdataCallbackが呼ばれる。省略可能。デフォルト動作はステージクリアまたはコンティニュー旗を取ったログのみ（＝ゲームに進展があったときのみ）
+ *
+ * PlaylogObject:
+ *   stage: number このログのステージ数
+ *   continued: boolean コンティニュー旗を取ったか
+ *   cleared: boolean このステージをクリアしたか
+ *   score: number このログ終了時点でのスコア
+ *   buffer: ArrayBuffer Masao Playlog Formatに従う入力データ
+ *
+ * ResultObject:
+ *   status: string このプレイログの種類（"cleared": ステージクリア, "miss": ミス, "abort": 中断）
+ *   continued: boolean コンティニュー旗を取ったか
+ *   stage: number このログのステージ数
+ *   score: number このログ終了時点でのスコア
+ */
 
 CanvasMasao.InputRecorder = (function(){
     var InputRecorder = function(mc, inputdataCallback, requiresCallback){
@@ -30,6 +58,8 @@ CanvasMasao.InputRecorder = (function(){
         this.buffers=[];
         this.current_buffer=null;
         this.current_buffer_size=0;
+        //次のフレームでデータを出力するためのオブジェクト
+        this.next_emit = null;
     };
     InputRecorder.prototype.init = function(){
         // GameKeyをフック
@@ -113,6 +143,98 @@ CanvasMasao.InputRecorder = (function(){
         var mc=this.mc, mp=mc.mp, ml_mode=mp.ml_mode;
         var prev_playing = this.prev_ml_mode===100 || this.prev_ml_mode===110,
             playing = ml_mode===100 || ml_mode===110;
+        var ne = this.next_emit;
+
+        if(ne != null){
+            //nullでないときはデータを出力する
+            //scoreだけここで取得する（2.8でのスコア加算フレームに対応）
+
+            //全てのバッファをまとめる
+            var result_buffers=this.buffers.concat(this.current_buffer.subarray(0,Math.ceil(this.current_buffer_size/4)*4));
+            //lengthを計算
+            var buffer_length = 0;
+            result_buffers.forEach(function(buf){
+                buffer_length += buf.length * buf.BYTES_PER_ELEMENT;
+            });
+            //種類(クリアした="clear", やられた="miss", 中断した="abort")
+            var status;
+            if(mp.stage !== ne.stage || ne.ml_mode===260 || ne.ml_mode >= 400){
+                //ステージが進行した or ゲームクリア画面なのでステージクリアした
+                status="clear";
+            }else if(ne.ml_mode>=300 || ne.ml_mode===90 || ne.ml_mode===250){
+                //ゲームオーバー画面 or ステージ開始画面
+                status="miss";
+            }else{
+                status="abort";
+            }
+            //最終スコア
+            var score=mp.score;
+
+            //HEADER blockを作成
+            var header = new Uint8Array(16);
+            var header_view = new DataView(header.buffer);
+            //seed
+            header_view.setUint32(0, ne.ran_seed, false);
+            //stage
+            header_view.setUint8(4, ne.stage);
+            //status
+            /// 1bit目（clearかどうか）
+            var status_octet = status==="clear" ? 1 : 0;
+            /// 2bit目（TR1がZかどうか）
+            status_octet |= ne.tr1_key===90 ? 2 : 0;
+            /// 3bit目( f=1)
+            status_octet |= 4;
+            header_view.setUint8(5, status_octet);
+            //reserved
+            header_view.setUint16(6,0);
+            //score
+            header_view.setUint32(8, score, false);
+            //length
+            header_view.setUint32(12, buffer_length, false);
+            //HEADER blockを結合
+            result_buffers = [header].concat(result_buffers);
+
+            //クリアデータに必要か？
+            var required;
+            if(this.requiresCallback){
+                //状況を表すオブジェクトを作る
+                var result={
+                    status: status,
+                    continued: ne.continued,
+                    //入力データが表すステージ(1-4)
+                    stage: ne.stage,
+                    //これ終了時点のスコア
+                    score: score
+                };
+                required = !!this.requiresCallback(result);
+            }else{
+                required= status==="clear" || ne.continued;
+            }
+            
+            //記録
+            if(required){
+                //クリアのログを残す
+                var allbuf = this.allbuf = this.allbuf.concat(result_buffers);
+                if(this.inputdataCallback != null){
+                    //新しいのが来たのでコールバックする
+                    //METADATA blockを作る
+                    var metadata = new Uint8Array([0x4D, 0x0E, 0x50, 0x0A,
+                                                  0x00, 0x00, 0x00, 0x02,
+                                                  0x00, 0x00, 0x00, 0x0C
+                    ]);
+                    setTimeout(function(ne){
+                        this.inputdataCallback({
+                            stage: ne.stage,
+                            continued: ne.continued,
+                            cleared: status==="clear",
+                            score: score,
+                            buffer: this.singlify([metadata].concat(allbuf))
+                        });
+                    }.bind(this,ne),0);
+                }
+            }
+            this.next_emit = ne = null;
+        }
         if(!prev_playing && playing){
             //ゲーム開始した
             this.initBuffer();
@@ -135,91 +257,14 @@ CanvasMasao.InputRecorder = (function(){
             this.frame++;
         }else if(prev_playing && !playing){
             //ステージが終わった
+            this.next_emit = {
+                ran_seed: this.ran_seed,
+                ml_mode: ml_mode,
+                stage: this.stage,
+                continued: this.continued,
+                tr1_key: this.tr1_key
+            };
 
-            //全てのバッファをまとめる
-            var result_buffers=this.buffers.concat(this.current_buffer.subarray(0,Math.ceil(this.current_buffer_size/4)*4));
-            //lengthを計算
-            var buffer_length = 0;
-            result_buffers.forEach(function(buf){
-                buffer_length += buf.length * buf.BYTES_PER_ELEMENT;
-            });
-            //種類(クリアした="clear", やられた="miss", 中断した="abort")
-            var status;
-            if(mp.stage !== this.stage || ml_mode===260 || ml_mode >= 400){
-                //ステージが進行した or ゲームクリア画面なのでステージクリアした
-                status="clear";
-            }else if(ml_mode>=300 || ml_mode===90 || ml_mode===250){
-                //ゲームオーバー画面 or ステージ開始画面
-                status="miss";
-            }else{
-                status="abort";
-            }
-            //最終スコア
-            var score=mp.score;
-
-            //HEADER blockを作成
-            var header = new Uint8Array(16);
-            var header_view = new DataView(header.buffer);
-            //seed
-            header_view.setUint32(0, this.ran_seed, false);
-            //stage
-            header_view.setUint8(4, this.stage);
-            //status
-            /// 1bit目（clearかどうか）
-            var status_octet = status==="clear" ? 1 : 0;
-            /// 2bit目（TR1がZかどうか）
-            status_octet |= this.tr1_key===90 ? 2 : 0;
-            /// 3bit目( f=1)
-            status_octet |= 4;
-            header_view.setUint8(5, status_octet);
-            //reserved
-            header_view.setUint16(6,0);
-            //score
-            header_view.setUint32(8, score, false);
-            //length
-            header_view.setUint32(12, buffer_length, false);
-            //HEADER blockを結合
-            result_buffers = [header].concat(result_buffers);
-
-            //クリアデータに必要か？
-            var required;
-            if(this.requiresCallback){
-                //状況を表すオブジェクトを作る
-                var result={
-                    status: status,
-                    continued: this.continued,
-                    //入力データが表すステージ(1-4)
-                    stage: this.stage,
-                    //これ終了時点のスコア
-                    score: score
-                };
-                required = !!this.requiresCallback(result);
-            }else{
-                required= status==="clear" || this.continued;
-            }
-            
-            //記録
-            if(required){
-                //クリアのログを残す
-                var allbuf = this.allbuf = this.allbuf.concat(result_buffers), stage=this.stage, continued=this.continued;
-                if(this.inputdataCallback != null){
-                    //新しいのが来たのでコールバックする
-                    //METADATA blockを作る
-                    var metadata = new Uint8Array([0x4D, 0x0E, 0x50, 0x0A,
-                                                  0x00, 0x00, 0x00, 0x02,
-                                                  0x00, 0x00, 0x00, 0x0C
-                    ]);
-                    setTimeout(function(){
-                        this.inputdataCallback({
-                            stage: stage,
-                            continued: continued,
-                            cleared: status==="clear",
-                            score: score,
-                            buffer: this.singlify([metadata].concat(allbuf))
-                        });
-                    }.bind(this),0);
-                }
-            }
             if(ml_mode===50){
                 //タイトルに戻った
                 this.reset();
@@ -303,11 +348,12 @@ CanvasMasao.InputRecorder = (function(){
     InputRecorder.inject = function(mc, options){
         var _ui=mc.userInit, _us=mc.userSub;
         var inputdataCallback = null, requiresCallback = null;
-        if("function"===typeof options.inputdataCallback){
-            inputdataCallback = options.inputdataCallback;
+        var o = options.InputRecorder || {};
+        if("function"===typeof o.inputdataCallback){
+            inputdataCallback = o.inputdataCallback;
         }
-        if("function"===typeof options.requiresCallback){
-            requiresCallback = options.requiresCallback;
+        if("function"===typeof o.requiresCallback){
+            requiresCallback = o.requiresCallback;
         }
         mc.userInit = function(){
             _ui.apply(mc);
