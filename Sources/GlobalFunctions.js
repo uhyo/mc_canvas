@@ -198,12 +198,12 @@ function Game(params, id, options){
 
 	this.__pt = 0;
 
-	var __interval_id = setInterval(function(){
-		this.__loop();
-	}.bind(this), __st);
+    // メインループを作成
+    var __loop = new Loop();
+    __loop.start(__st, this.__loop.bind(this));
     this.__resourceList.push({
-        type: "setInterval",
-        value: __interval_id
+        type: "Loop",
+        value: __loop,
     });
 }
 
@@ -340,6 +340,8 @@ Game.prototype.kill = function(){
             clearInterval(rl[i].value);
         }else if(rl[i].type==="eventListener"){
             rl[i].target.removeEventListener(rl[i].name, rl[i].value);
+        }else if(rl[i].type==="Loop"){
+            rl[i].value.stop();
         }
     }
     this.__resourceList=[];
@@ -807,10 +809,86 @@ function makeRandomString(){
 	return Math.random().toString(36).slice(2);
 }
 
+/**
+ * requestAnimationFrameまたはsetIntervalを用いたループを行うためのクラスです。
+ * @constructor
+ */
+function Loop(){
+    this.running = false;
+    this.interval = null;
+    this.callback = null;
+    this.prevTime = null;
+    /*
+     * mode: 0 = setInterval
+     *       1 = requestAnimationFrame
+     */
+    this.mode = 0;
+    this.timerid = null;
+    this._loop = this._loop.bind(this);
+}
+/**
+ * 指定した間隔（ミリ秒）でループを行います。
+ * @param {number} interval ループの間隔
+ * @param {Function} callback ループで呼び出される関数
+ */
+Loop.prototype.start = function(interval, callback){
+    this.running = true;
+    this.interval = interval;
+    this.callback = callback;
+    this.targetTime = Date.now() + interval;
 
+    if (window.requestAnimationFrame){
+        this.mode = 1;
+    } else {
+        this.mode = 0;
+        this.timerid = setInterval(this._loop, interval);
+    }
+    this._next();
+};
 
+/**
+ * ループを停止します。
+ */
+Loop.prototype.stop = function(){
+    if (!this.running){
+        return;
+    }
+    this.running = false;
+    if (this.mode === 1){
+        cancelAnimationFrame(this.timerid);
+    } else {
+        clearInterval(this.timerid);
+    }
+}
 
+/**
+ * 次回のループを登録する関数です。
+ * @private
+ */
+Loop.prototype._next = function(){
+    if (this.mode === 1){
+        this.timerid = requestAnimationFrame(this._loop);
+    }
+};
 
+/**
+ * 1回のループを処理する関数です。
+ * @private
+ */
+Loop.prototype._loop = function(){
+    if (!this.running){
+        return;
+    }
+    // 1回ループした
+    while (Date.now() >= this.targetTime) {
+        this.callback();
+        // 次のループ時間
+        this.targetTime += this.interval;
+    }
+    this._next();
+};
 
-
-
+// Date.nowに対するPolyfill
+if (!Date.now){
+    Date.now = function now(){ return (new Date()).getTime(); };
+}
