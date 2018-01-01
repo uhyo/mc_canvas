@@ -199,7 +199,7 @@ function Game(params, id, options){
 	this.__pt = 0;
 
     // メインループを作成
-    var __loop = new Loop();
+    var __loop = new Loop(this);
     __loop.start(__st, this.__loop.bind(this));
     this.__resourceList.push({
         type: "Loop",
@@ -812,17 +812,42 @@ function makeRandomString(){
 /**
  * requestAnimationFrameまたはsetIntervalを用いたループを行うためのクラスです。
  * @constructor
+ * @param {Game} game 持ち主のGameオブジェクトです。
  */
-function Loop(){
+function Loop(game){
+    this.game = game;
+    /**
+     * @member {boolean}
+     * @private
+     * 現在ループが回っているかどうかのフラグ。
+     */
     this.running = false;
+    /**
+     * @member {number}
+     * @private
+     * 現在のループの間隔（ミリ秒）。
+     */
     this.interval = null;
+    /**
+     * @member {Function}
+     * @private
+     * ループごとに呼び出されるコールバック関数
+     */
     this.callback = null;
-    this.prevTime = null;
     /*
-     * mode: 0 = setInterval
-     *       1 = requestAnimationFrame
+     * @member {number}
+     * @private
+     * ループに何を使っているかのフラグ。
+     * 0: setInterval
+     * 1: requestAnimationFrame
      */
     this.mode = 0;
+    /*
+     * @member {number}
+     * @private
+     * 現在待機中のsetIntervalやrequestAnimationFrameの返り値。
+     * ループを止めるとき用。
+     */
     this.timerid = null;
     this._loop = this._loop.bind(this);
 }
@@ -835,12 +860,15 @@ Loop.prototype.start = function(interval, callback){
     this.running = true;
     this.interval = interval;
     this.callback = callback;
-    this.targetTime = Date.now() + interval;
+    this.targetTime = timestamp() + interval;
 
     if (window.requestAnimationFrame){
         this.mode = 1;
     } else {
         this.mode = 0;
+    }
+
+    if (this.mode === 0){
         this.timerid = setInterval(this._loop, interval);
     }
     this._next();
@@ -879,16 +907,62 @@ Loop.prototype._loop = function(){
     if (!this.running){
         return;
     }
-    // 1回ループした
-    while (Date.now() >= this.targetTime) {
+    /**
+     * @constant
+     * requestAnimationFrameのハンドラ内の時間の上限（ミリ秒）
+     */
+    var FRAME_TIME = 2;
+    var n = timestamp();
+    // 現在コールバックを呼ぶべき回数
+    var loop_count = Math.ceil((n - this.targetTime) / this.interval);
+    while (loop_count > 0){
         this.callback();
-        // 次のループ時間
         this.targetTime += this.interval;
+        loop_count--;
+        // 毎回現在時刻を求め、許容される経過時間を過ぎたら
+        // ループ回数が残っていても中断
+        if (timestamp() - n > FRAME_TIME){
+            break;
+        }
+    }
+    if (loop_count > 0){
+        // 処理が終わりきらなかった場合は残りは後回しにする
+        // requestIdleCallbackにより描画処理後に行われることを期待
+        // （描画処理を優先させてあげないとFPSが落ちるので）
+        idle(function(){
+            while (loop_count > 0){
+                this.callback();
+                this.targetTime += this.interval;
+                loop_count--;
+            }
+        }.bind(this), {
+            // 一定期間実行できなかったフレームは捨てる（超高負荷時用）
+            timeout: 100,
+        });
     }
     this._next();
+    this.prev_time = n;
 };
 
-// Date.nowに対するPolyfill
-if (!Date.now){
-    Date.now = function now(){ return (new Date()).getTime(); };
-}
+/**
+ * @function timestamp
+ * 現在時刻を返す関数です。
+ * ただしperformance.nowの返す時刻はUNIX時間ではなく
+ * およそページを開いてからの経過時間なので、かならず相対時刻で利用すること。
+ * @returns Number 現在時刻
+ */
+var timestamp =
+    window.performance && performance.now ? performance.now.bind(performance) :
+    Date.now ? Date.now.bind(Date) : function(){
+        return new Date().getTime() * 1000;
+    };
+
+/**
+ * @function idle
+ * 処理を先送りにする関数です。
+ * 基本的にはrequestIdleCallbackを想定し、他はPolyfillです。
+ */
+var idle =
+    'function' === typeof requestIdleCallback ? requestIdleCallback :
+    'function' === typeof setImmediate ? setImmediate :
+    function(cb){ setTimeout(cb, 0); };
