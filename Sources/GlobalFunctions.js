@@ -926,7 +926,12 @@ Loop.prototype._loop = function(){
      * 一時停止の判断の閾値（ミリ秒）
      * memo: game_speedの最大は300
      */
-    var STOP_LIMIT = 1000;
+    var STOP_LIMIT = 500;
+    /**
+     * @constant
+     * requestIdleCallbackのコールバック呼び出し期限
+     */
+    var IDLE_TIMEOUT = 1000;
 
     var n = timestamp();
     if (n - this.prevTime >= STOP_LIMIT) {
@@ -936,9 +941,9 @@ Loop.prototype._loop = function(){
     }
     // 現在コールバックを呼ぶべき回数
     var loop_count = Math.ceil((n - this.targetTime) / this.interval);
+    this.targetTime += this.interval * loop_count;
     while (loop_count > 0){
         this.callback();
-        this.targetTime += this.interval;
         loop_count--;
         // 毎回現在時刻を求め、許容される経過時間を過ぎたら
         // ループ回数が残っていても中断
@@ -950,15 +955,23 @@ Loop.prototype._loop = function(){
         // 処理が終わりきらなかった場合は残りは後回しにする
         // requestIdleCallbackにより描画処理後に行われることを期待
         // （描画処理を優先させてあげないとFPSが落ちるので）
-        idle(function(){
-            while (loop_count > 0){
-                this.callback();
-                this.targetTime += this.interval;
+        var _this = this;
+        idle(function cb(deadline){
+            // console.warn('idle', loop_count, deadline.timeRemaining());
+            while (loop_count > 0 && deadline.timeRemaining() > 0){
+                _this.callback();
                 loop_count--;
             }
-        }.bind(this), {
-            // 一定期間実行できなかったフレームは捨てる（超高負荷時用）
-            timeout: 1000,
+            if (loop_count > 0)console.warn('idle BOOM', loop_count);
+            if (loop_count > 0 && !deadline.didTimeout){
+                // まだ実行しきれていない場合は次のidleに回す
+                // （didTimeoutがtrueの場合は超高負荷なので諦める）
+                idle(cb, {
+                    timeout: IDLE_TIMEOUT,
+                });
+            }
+        }, {
+            timeout: IDLE_TIMEOUT,
         });
     }
     this._next();
