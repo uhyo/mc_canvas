@@ -937,7 +937,7 @@ Loop.prototype._loop = function(){
             }
         }.bind(this), {
             // 一定期間実行できなかったフレームは捨てる（超高負荷時用）
-            timeout: 100,
+            timeout: 1000,
         });
     }
     this._next();
@@ -960,9 +960,34 @@ var timestamp =
 /**
  * @function idle
  * 処理を先送りにする関数です。
- * 基本的にはrequestIdleCallbackを想定し、他はPolyfillです。
+ * requestIdleCallbackを想定し、他はshimです。
  */
 var idle =
     'function' === typeof requestIdleCallback ? requestIdleCallback :
-    'function' === typeof setImmediate ? setImmediate :
-    function(cb){ setTimeout(cb, 0); };
+    'function' === typeof setImmediate ?
+    function(cb){
+        setImmediate(function(){
+            var n = timestamp();
+            var deadline = {
+                didTimeout: false,
+                timeRemaining: function(){
+                    // 50ms is the maximum value recommended by Google
+                    return 50 + n - timestamp();
+                },
+            };
+            cb(deadline);
+        });
+    } :
+    function(cb){
+        setTimeout(function(){
+            var n = timestamp();
+            var deadline = {
+                didTimeout: false,
+                timeRemaining: function(){
+                    // 50ms is the maximum value recommended by Google
+                    return 50 + n - timestamp();
+                },
+            };
+            cb(deadline);
+        }, 1);
+    };
