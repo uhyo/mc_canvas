@@ -834,7 +834,7 @@ function Loop(game){
      * ループごとに呼び出されるコールバック関数
      */
     this.callback = null;
-    /*
+    /**
      * @member {number}
      * @private
      * ループに何を使っているかのフラグ。
@@ -842,7 +842,13 @@ function Loop(game){
      * 1: requestAnimationFrame
      */
     this.mode = 0;
-    /*
+    /**
+     * @member {number}
+     * @private
+     * 前のルームが呼び出された時刻。
+     */
+    this.prevTime = null;
+    /**
      * @member {number}
      * @private
      * 現在待機中のsetIntervalやrequestAnimationFrameの返り値。
@@ -860,7 +866,10 @@ Loop.prototype.start = function(interval, callback){
     this.running = true;
     this.interval = interval;
     this.callback = callback;
-    this.targetTime = timestamp() + interval;
+    
+    var now = timestamp();
+    this.targetTime = now + interval;
+    this.prevTime = now;
 
     if (window.requestAnimationFrame){
         this.mode = 1;
@@ -912,7 +921,19 @@ Loop.prototype._loop = function(){
      * requestAnimationFrameのハンドラ内の時間の上限（ミリ秒）
      */
     var FRAME_TIME = 2;
+    /**
+     * @constant
+     * 一時停止の判断の閾値（ミリ秒）
+     * memo: game_speedの最大は300
+     */
+    var STOP_LIMIT = 1000;
+
     var n = timestamp();
+    if (n - this.prevTime >= STOP_LIMIT) {
+        // 前回のループから閾値以上経過していたら一時停止があったと判断
+        // 経過時間分のループを放棄
+        this.targetTime = n - 1;
+    }
     // 現在コールバックを呼ぶべき回数
     var loop_count = Math.ceil((n - this.targetTime) / this.interval);
     while (loop_count > 0){
@@ -941,7 +962,7 @@ Loop.prototype._loop = function(){
         });
     }
     this._next();
-    this.prev_time = n;
+    this.prevTime = n;
 };
 
 /**
