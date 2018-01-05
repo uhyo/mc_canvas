@@ -12,6 +12,7 @@
  * @param {Function} [options.highscoreCallback] ハイスコア更新時に呼び出されるコールバック関数
  * @param {Object} [options."advance-map"] 第3版マップデータ
  * @param {boolean} [options."bc-enemy-number"] 敵の数制限の後方互換性を保つ
+ * @param {boolean} [options."bc-loop-setinterval"] ループに必ずsetIntervalを使う
  */
 function Game(params, id, options){
 	var randomID = makeRandomString();
@@ -199,7 +200,7 @@ function Game(params, id, options){
 	this.__pt = 0;
 
     // メインループを作成
-    var __loop = new Loop(this);
+    var __loop = new Loop(this, !!options['bc-loop-setinterval']);
     __loop.start(__st, this.__loop.bind(this));
     this.__resourceList.push({
         type: "Loop",
@@ -813,9 +814,11 @@ function makeRandomString(){
  * requestAnimationFrameまたはsetIntervalを用いたループを行うためのクラスです。
  * @constructor
  * @param {Game} game 持ち主のGameオブジェクトです。
+ * @param {boolean} forceSetInterval 必ずsetIntervalを使用するフラグ
  */
-function Loop(game){
+function Loop(game, forceSetInterval){
     this.game = game;
+    this.forceSetInterval = forceSetInterval;
     /**
      * @member {boolean}
      * @private
@@ -871,7 +874,7 @@ Loop.prototype.start = function(interval, callback){
     this.targetTime = now + interval;
     this.prevTime = now;
 
-    if (window.requestAnimationFrame){
+    if (window.requestAnimationFrame && !this.forceSetInterval){
         this.mode = 1;
     } else {
         this.mode = 0;
